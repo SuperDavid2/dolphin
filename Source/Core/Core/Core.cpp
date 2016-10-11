@@ -27,6 +27,7 @@
 #include "Common/Timer.h"
 
 #include "Core/Analytics.h"
+#include "Core/BootManager.h"
 #include "Core/ConfigManager.h"
 #include "Core/Core.h"
 #include "Core/CoreTiming.h"
@@ -52,7 +53,7 @@
 #include "Core/HW/SystemTimers.h"
 #include "Core/HW/VideoInterface.h"
 #include "Core/HW/Wiimote.h"
-#include "Core/IPC_HLE/WII_IPC_HLE_Device_usb.h"
+#include "Core/IPC_HLE/WII_IPC_HLE_Device_usb_bt_emu.h"
 #include "Core/IPC_HLE/WII_IPC_HLE_WiiMote.h"
 #include "Core/IPC_HLE/WII_Socket.h"
 #include "Core/Movie.h"
@@ -172,13 +173,6 @@ void DisplayMessage(const std::string& message, int time_in_ms)
   if (!IsRunning())
     return;
 
-  // Actually displaying non-ASCII could cause things to go pear-shaped
-  for (const char& c : message)
-  {
-    if (!std::isprint(c))
-      return;
-  }
-
   OSD::AddMessage(message, time_in_ms);
   Host_UpdateTitle(message);
 }
@@ -255,8 +249,8 @@ bool Init()
   if (g_aspect_wide)
   {
     IniFile gameIni = _CoreParameter.LoadGameIni();
-    gameIni.GetOrCreateSection("Wii")->Get(
-        "Widescreen", &g_aspect_wide, !!SConfig::GetInstance().m_SYSCONF->GetData<u8>("IPL.AR"));
+    gameIni.GetOrCreateSection("Wii")->Get("Widescreen", &g_aspect_wide,
+                                           !!SConfig::GetInstance().m_wii_aspect_ratio);
   }
 
   s_window_handle = Host_GetRenderHandle();
@@ -297,7 +291,7 @@ void Stop()  // - Hammertime!
 
     g_video_backend->Video_ExitLoop();
   }
-#if defined(__LIBUSB__) || defined(_WIN32)
+#if defined(__LIBUSB__)
   GCAdapter::ResetRumble();
 #endif
 
@@ -528,7 +522,7 @@ void EmuThread()
   }
 
   // Load and Init Wiimotes - only if we are booting in Wii mode
-  if (core_parameter.bWii)
+  if (core_parameter.bWii && !SConfig::GetInstance().m_bt_passthrough_enabled)
   {
     if (init_controllers)
       Wiimote::Initialize(s_window_handle, !s_state_filename.empty() ?
@@ -668,9 +662,7 @@ void EmuThread()
   // Clear on screen messages that haven't expired
   OSD::ClearMessages();
 
-  // Reload sysconf file in order to see changes committed during emulation
-  if (core_parameter.bWii)
-    SConfig::GetInstance().m_SYSCONF->Reload();
+  BootManager::RestoreConfig();
 
   INFO_LOG(CONSOLE, "Stop [Video Thread]\t\t---- Shutdown complete ----");
   Movie::Shutdown();
@@ -698,7 +690,7 @@ void SetState(EState state)
     //   stopped (including the CPU).
     CPU::EnableStepping(true);  // Break
     Wiimote::Pause();
-#if defined(__LIBUSB__) || defined(_WIN32)
+#if defined(__LIBUSB__)
     GCAdapter::ResetRumble();
 #endif
     break;
@@ -818,7 +810,7 @@ bool PauseAndLock(bool do_lock, bool unpause_on_unlock)
   // (s_efbAccessRequested).
   Fifo::PauseAndLock(do_lock, false);
 
-#if defined(__LIBUSB__) || defined(_WIN32)
+#if defined(__LIBUSB__)
   GCAdapter::ResetRumble();
 #endif
 
@@ -931,11 +923,9 @@ void UpdateTitle()
       float TicksPercentage =
           (float)diff / (float)(SystemTimers::GetTicksPerSecond() / 1000000) * 100;
 
-      SFPS +=
-          StringFromFormat(" | CPU: %s%i MHz [Real: %i + IdleSkip: %i] / %i MHz (%s%3.0f%%)",
-                           _CoreParameter.bSkipIdle ? "~" : "", (int)(diff), (int)(diff - idleDiff),
-                           (int)(idleDiff), SystemTimers::GetTicksPerSecond() / 1000000,
-                           _CoreParameter.bSkipIdle ? "~" : "", TicksPercentage);
+      SFPS += StringFromFormat(" | CPU: ~%i MHz [Real: %i + IdleSkip: %i] / %i MHz (~%3.0f%%)",
+                               (int)(diff), (int)(diff - idleDiff), (int)(idleDiff),
+                               SystemTimers::GetTicksPerSecond() / 1000000, TicksPercentage);
     }
   }
   // This is our final "frame counter" string

@@ -20,6 +20,7 @@
 
 #include "Common/CommonTypes.h"
 #include "Common/Event.h"
+#include "Common/FileUtil.h"
 #include "Common/Flag.h"
 #include "Common/Profiler.h"
 #include "Common/StringUtil.h"
@@ -32,6 +33,7 @@
 #include "Core/Host.h"
 #include "Core/Movie.h"
 
+#include "OnScreenDisplay.h"
 #include "VideoCommon/AVIDump.h"
 #include "VideoCommon/BPMemory.h"
 #include "VideoCommon/CPMemory.h"
@@ -39,6 +41,7 @@
 #include "VideoCommon/Debugger.h"
 #include "VideoCommon/FPSCounter.h"
 #include "VideoCommon/FramebufferManagerBase.h"
+#include "VideoCommon/ImageWrite.h"
 #include "VideoCommon/PostProcessing.h"
 #include "VideoCommon/RenderBase.h"
 #include "VideoCommon/Statistics.h"
@@ -48,8 +51,6 @@
 
 // TODO: Move these out of here.
 int frameCount;
-int OSDChoice;
-static int OSDTime;
 
 std::unique_ptr<Renderer> g_renderer;
 
@@ -98,17 +99,10 @@ static float AspectToWidescreen(float aspect)
   return aspect * ((16.0f / 9.0f) / (4.0f / 3.0f));
 }
 
-Renderer::Renderer() : frame_data(), bLastFrameDumped(false)
+Renderer::Renderer()
 {
   UpdateActiveConfig();
   TextureCacheBase::OnConfigChanged(g_ActiveConfig);
-
-#if defined _WIN32 || defined HAVE_LIBAV
-  bAVIDumping = false;
-#endif
-
-  OSDChoice = 0;
-  OSDTime = 0;
 }
 
 Renderer::~Renderer()
@@ -117,9 +111,14 @@ Renderer::~Renderer()
   prev_efb_format = PEControl::INVALID_FMT;
 
   efb_scale_numeratorX = efb_scale_numeratorY = efb_scale_denominatorX = efb_scale_denominatorY = 1;
-#if defined _WIN32 || defined HAVE_LIBAV
-  if (SConfig::GetInstance().m_DumpFrames && bLastFrameDumped && bAVIDumping)
+
+#if defined(HAVE_LIBAV) || defined(_WIN32)
+  // Stop frame dumping if it was left enabled at shutdown time.
+  if (m_AVI_dumping)
+  {
     AVIDump::Stop();
+    m_AVI_dumping = false;
+  }
 #endif
 }
 
@@ -302,146 +301,46 @@ void Renderer::SetScreenshot(const std::string& filename)
   s_bScreenshot = true;
 }
 
-// Create On-Screen-Messages
 void Renderer::DrawDebugText()
 {
-  std::string final_yellow, final_cyan;
+  auto draw_text = [](OSD::MessageType type, const std::string& message) {
+    OSD::AddTypedMessage(type, message, OSD::Duration::SHORT, OSD::Color::CYAN);
+  };
 
-  if (g_ActiveConfig.bShowFPS || SConfig::GetInstance().m_ShowFrameCount)
+  if (g_ActiveConfig.bShowFPS)
   {
-    if (g_ActiveConfig.bShowFPS)
-      final_cyan += StringFromFormat("FPS: %u", g_renderer->m_fps_counter.GetFPS());
+    draw_text(OSD::MessageType::FPS,
+              StringFromFormat("FPS: %u", g_renderer->m_fps_counter.GetFPS()));
+  }
 
-    if (g_ActiveConfig.bShowFPS && SConfig::GetInstance().m_ShowFrameCount)
-      final_cyan += " - ";
-    if (SConfig::GetInstance().m_ShowFrameCount)
+  if (SConfig::GetInstance().m_ShowFrameCount)
+  {
+    draw_text(OSD::MessageType::FrameCount,
+              StringFromFormat("Frame: %" PRIu64, Movie::GetCurrentFrame()));
+
+    if (Movie::IsPlayingInput())
     {
-      final_cyan += StringFromFormat("Frame: %llu", (unsigned long long)Movie::GetCurrentFrame());
-      if (Movie::IsPlayingInput())
-        final_cyan += StringFromFormat("\nInput: %llu / %llu",
-                                       (unsigned long long)Movie::GetCurrentInputCount(),
-                                       (unsigned long long)Movie::GetTotalInputCount());
+      draw_text(OSD::MessageType::MovieInputCount,
+                StringFromFormat("Input: %" PRIu64 " / %" PRIu64, Movie::GetCurrentInputCount(),
+                                 Movie::GetTotalInputCount()));
     }
-
-    final_cyan += "\n";
-    final_yellow += "\n";
   }
 
   if (SConfig::GetInstance().m_ShowLag)
   {
-    final_cyan += StringFromFormat("Lag: %" PRIu64 "\n", Movie::GetCurrentLagCount());
-    final_yellow += "\n";
+    draw_text(OSD::MessageType::MovieLag,
+              StringFromFormat("Lag: %" PRIu64, Movie::GetCurrentLagCount()));
   }
 
   if (SConfig::GetInstance().m_ShowInputDisplay)
   {
-    final_cyan += Movie::GetInputDisplay();
-    final_yellow += "\n";
+    draw_text(OSD::MessageType::MovieInput, Movie::GetInputDisplay());
   }
 
   if (SConfig::GetInstance().m_ShowRTC)
   {
-    final_cyan += Movie::GetRTCDisplay();
-    final_yellow += "\n";
+    draw_text(OSD::MessageType::RTC, Movie::GetRTCDisplay());
   }
-
-  // OSD Menu messages
-  if (OSDChoice > 0)
-  {
-    OSDTime = Common::Timer::GetTimeMs() + 3000;
-    OSDChoice = -OSDChoice;
-  }
-
-  if ((u32)OSDTime > Common::Timer::GetTimeMs())
-  {
-    std::string res_text;
-    switch (g_ActiveConfig.iEFBScale)
-    {
-    case SCALE_AUTO:
-      res_text = "Auto (fractional)";
-      break;
-    case SCALE_AUTO_INTEGRAL:
-      res_text = "Auto (integral)";
-      break;
-    case SCALE_1X:
-      res_text = "Native";
-      break;
-    case SCALE_1_5X:
-      res_text = "1.5x";
-      break;
-    case SCALE_2X:
-      res_text = "2x";
-      break;
-    case SCALE_2_5X:
-      res_text = "2.5x";
-      break;
-    default:
-      res_text = StringFromFormat("%dx", g_ActiveConfig.iEFBScale - 3);
-      break;
-    }
-    const char* ar_text = "";
-    switch (g_ActiveConfig.iAspectRatio)
-    {
-    case ASPECT_AUTO:
-      ar_text = "Auto";
-      break;
-    case ASPECT_STRETCH:
-      ar_text = "Stretch";
-      break;
-    case ASPECT_ANALOG:
-      ar_text = "Force 4:3";
-      break;
-    case ASPECT_ANALOG_WIDE:
-      ar_text = "Force 16:9";
-    }
-
-    const char* const efbcopy_text = g_ActiveConfig.bSkipEFBCopyToRam ? "to Texture" : "to RAM";
-
-    // The rows
-    const std::string lines[] = {
-        std::string("Internal Resolution: ") + res_text,
-        std::string("Aspect Ratio: ") + ar_text + (g_ActiveConfig.bCrop ? " (crop)" : ""),
-        std::string("Copy EFB: ") + efbcopy_text,
-        std::string("Fog: ") + (g_ActiveConfig.bDisableFog ? "Disabled" : "Enabled"),
-        SConfig::GetInstance().m_EmulationSpeed <= 0 ?
-            "Speed Limit: Unlimited" :
-            StringFromFormat("Speed Limit: %li%%",
-                             std::lround(SConfig::GetInstance().m_EmulationSpeed * 100.f)),
-    };
-
-    enum
-    {
-      lines_count = sizeof(lines) / sizeof(*lines)
-    };
-
-    // The latest changed setting in yellow
-    for (int i = 0; i != lines_count; ++i)
-    {
-      if (OSDChoice == -i - 1)
-        final_yellow += lines[i];
-      final_yellow += '\n';
-    }
-
-    // The other settings in cyan
-    for (int i = 0; i != lines_count; ++i)
-    {
-      if (OSDChoice != -i - 1)
-        final_cyan += lines[i];
-      final_cyan += '\n';
-    }
-  }
-
-  final_cyan += Common::Profiler::ToString();
-
-  if (g_ActiveConfig.bOverlayStats)
-    final_cyan += Statistics::ToString();
-
-  if (g_ActiveConfig.bOverlayProjStats)
-    final_cyan += Statistics::ToStringProj();
-
-  // and then the text
-  g_renderer->RenderText(final_cyan, 20, 20, 0xFF00FFFF);
-  g_renderer->RenderText(final_yellow, 20, 20, 0xFFFFFF00);
 }
 
 void Renderer::UpdateDrawRectangle(int backbuffer_width, int backbuffer_height)
@@ -636,6 +535,82 @@ void Renderer::Swap(u32 xfbAddr, u32 fbWidth, u32 fbStride, u32 fbHeight, const 
   Core::Callback_VideoCopiedToXFB(XFBWrited ||
                                   (g_ActiveConfig.bUseXFB && g_ActiveConfig.bUseRealXFB));
   XFBWrited = false;
+}
+
+bool Renderer::IsFrameDumping()
+{
+  if (s_bScreenshot)
+    return true;
+
+#if defined(HAVE_LIBAV) || defined(_WIN32)
+  if (SConfig::GetInstance().m_DumpFrames)
+    return true;
+
+  if (m_last_frame_dumped && m_AVI_dumping)
+  {
+    AVIDump::Stop();
+    std::vector<u8>().swap(m_frame_data);
+    m_AVI_dumping = false;
+    OSD::AddMessage("Stop dumping frames", 2000);
+  }
+  m_last_frame_dumped = false;
+#endif
+  return false;
+}
+
+void Renderer::DumpFrameData(const u8* data, int w, int h, int stride, bool swap_upside_down)
+{
+  if (w == 0 || h == 0)
+    return;
+
+  // TODO: Refactor this. Right now it's needed for the implace flipping of the image.
+  m_frame_data.assign(data, data + stride * h);
+  if (swap_upside_down)
+    FlipImageData(m_frame_data.data(), w, h, 4);
+
+  // Save screenshot
+  if (s_bScreenshot)
+  {
+    std::lock_guard<std::mutex> lk(s_criticalScreenshot);
+
+    if (TextureToPng(m_frame_data.data(), stride, s_sScreenshotName, w, h, false))
+      OSD::AddMessage("Screenshot saved to " + s_sScreenshotName);
+
+    // Reset settings
+    s_sScreenshotName.clear();
+    s_bScreenshot = false;
+    s_screenshotCompleted.Set();
+  }
+
+#if defined(HAVE_LIBAV) || defined(_WIN32)
+  if (SConfig::GetInstance().m_DumpFrames)
+  {
+    if (!m_last_frame_dumped)
+    {
+      m_AVI_dumping = AVIDump::Start(w, h);
+      if (!m_AVI_dumping)
+      {
+        OSD::AddMessage("AVIDump Start failed", 2000);
+      }
+      else
+      {
+        OSD::AddMessage(StringFromFormat("Dumping Frames to \"%sframedump0.avi\" (%dx%d RGB24)",
+                                         File::GetUserPath(D_DUMPFRAMES_IDX).c_str(), w, h),
+                        2000);
+      }
+    }
+    if (m_AVI_dumping)
+    {
+      AVIDump::AddFrame(m_frame_data.data(), w, h, stride);
+    }
+
+    m_last_frame_dumped = true;
+  }
+#endif
+}
+
+void Renderer::FinishFrameData()
+{
 }
 
 void Renderer::FlipImageData(u8* data, int w, int h, int pixel_width)

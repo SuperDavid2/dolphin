@@ -25,13 +25,13 @@ class RasterFont;
 class Renderer : public ::Renderer
 {
 public:
-  Renderer();
+  Renderer(std::unique_ptr<SwapChain> swap_chain);
   ~Renderer();
 
   SwapChain* GetSwapChain() const { return m_swap_chain.get(); }
   StateTracker* GetStateTracker() const { return m_state_tracker.get(); }
   BoundingBox* GetBoundingBox() const { return m_bounding_box.get(); }
-  bool Initialize(FramebufferManager* framebuffer_mgr, void* window_handle, VkSurfaceKHR surface);
+  bool Initialize(FramebufferManager* framebuffer_mgr);
 
   void RenderText(const std::string& pstr, int left, int top, u32 color) override;
   u32 AccessEFB(EFBAccessType type, u32 x, u32 y, u32 poke_data) override;
@@ -48,11 +48,6 @@ public:
                    u32 color, u32 z) override;
 
   void ReinterpretPixelData(unsigned int convtype) override;
-
-  bool SaveScreenshot(const std::string& filename, const TargetRectangle& rc) override
-  {
-    return false;
-  }
 
   void ApplyState(bool bUseDstAlpha) override;
 
@@ -99,14 +94,10 @@ private:
                   const TargetRectangle& src_rect, const Texture2D* src_tex, bool linear_filter);
   bool ResizeScreenshotBuffer(u32 new_width, u32 new_height);
   void DestroyScreenshotResources();
-  void WriteScreenshot();
-  void WriteFrameDump();
-  void StopFrameDump();
-
   FramebufferManager* m_framebuffer_mgr = nullptr;
 
-  VkSemaphore m_image_available_semaphore = nullptr;
-  VkSemaphore m_rendering_finished_semaphore = nullptr;
+  VkSemaphore m_image_available_semaphore = VK_NULL_HANDLE;
+  VkSemaphore m_rendering_finished_semaphore = VK_NULL_HANDLE;
 
   std::unique_ptr<SwapChain> m_swap_chain;
   std::unique_ptr<StateTracker> m_state_tracker;
@@ -118,6 +109,10 @@ private:
 
   // Shaders used for clear/blit.
   VkShaderModule m_clear_fragment_shader = VK_NULL_HANDLE;
+
+  // NOTE: The blit shader here is used for the final copy from the source buffer(s) to the swap
+  // chain buffer for presentation. It ignores the alpha channel of the input image and sets the
+  // alpha channel to 1.0 to avoid issues with frame dumping and screenshots.
   VkShaderModule m_blit_fragment_shader = VK_NULL_HANDLE;
 
   // Texture used for screenshot/frame dumping

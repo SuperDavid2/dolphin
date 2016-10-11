@@ -223,7 +223,7 @@ bool StateTracker::CheckForShaderChanges(u32 gx_primitive_type, DSTALPHA_MODE ds
 
   if (ps_uid != m_ps_uid)
   {
-    m_pipeline_state.ps = g_object_cache->GetPixelShaderForUid(ps_uid, dstalpha_mode);
+    m_pipeline_state.ps = g_object_cache->GetPixelShaderForUid(ps_uid);
     m_ps_uid = ps_uid;
     changed = true;
   }
@@ -539,7 +539,7 @@ void StateTracker::EndRenderPass()
     return;
 
   vkCmdEndRenderPass(g_command_buffer_mgr->GetCurrentCommandBuffer());
-  m_current_render_pass = nullptr;
+  m_current_render_pass = VK_NULL_HANDLE;
 }
 
 void StateTracker::BeginClearRenderPass(const VkRect2D& area, const VkClearValue clear_values[2])

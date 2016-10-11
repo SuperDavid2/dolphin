@@ -19,11 +19,11 @@
 #include "DolphinWX/ISOFile.h"
 #include "DolphinWX/PatchAddEdit.h"
 
+class DolphinSlider;
 class wxButton;
 class wxCheckBox;
 class wxCheckListBox;
 class wxChoice;
-class wxSlider;
 class wxSpinCtrl;
 class wxStaticBitmap;
 class wxTextCtrl;
@@ -81,7 +81,7 @@ private:
   PHackData m_PHack_Data;
 
   // Core
-  wxCheckBox *CPUThread, *SkipIdle, *MMU, *DCBZOFF, *FPRF;
+  wxCheckBox *CPUThread, *MMU, *DCBZOFF, *FPRF;
   wxCheckBox *SyncGPU, *FastDiscSpeed, *DSPHLE;
 
   wxArrayString arrayStringFor_GPUDeterminism;
@@ -90,7 +90,7 @@ private:
   wxCheckBox* EnableWideScreen;
 
   // Stereoscopy
-  wxSlider* DepthPercentage;
+  DolphinSlider* DepthPercentage;
   wxSpinCtrl* Convergence;
   wxCheckBox* MonoDepth;
 
@@ -140,7 +140,6 @@ private:
     ID_FILESYSTEM,
 
     ID_USEDUALCORE,
-    ID_IDLESKIP,
     ID_MMU,
     ID_DCBZOFF,
     ID_FPRF,

@@ -57,11 +57,11 @@ static const SPatch OSPatches[] = {
     {"WUD_DEBUGPrint", HLE_OS::HLE_GeneralDebugPrint, HLE_HOOK_REPLACE, HLE_TYPE_DEBUG},
     {"vprintf", HLE_OS::HLE_GeneralDebugPrint, HLE_HOOK_REPLACE, HLE_TYPE_DEBUG},
     {"printf", HLE_OS::HLE_GeneralDebugPrint, HLE_HOOK_REPLACE, HLE_TYPE_DEBUG},
+    {"nlPrintf", HLE_OS::HLE_GeneralDebugPrint, HLE_HOOK_REPLACE, HLE_TYPE_DEBUG},
     {"puts", HLE_OS::HLE_GeneralDebugPrint, HLE_HOOK_REPLACE,
      HLE_TYPE_DEBUG},  // gcc-optimized printf?
-    {"___blank(char *,...)", HLE_OS::HLE_GeneralDebugPrint, HLE_HOOK_REPLACE,
+    {"___blank", HLE_OS::HLE_GeneralDebugPrint, HLE_HOOK_REPLACE,
      HLE_TYPE_DEBUG},  // used for early init things (normally)
-    {"___blank", HLE_OS::HLE_GeneralDebugPrint, HLE_HOOK_REPLACE, HLE_TYPE_DEBUG},
     {"__write_console", HLE_OS::HLE_write_console, HLE_HOOK_REPLACE,
      HLE_TYPE_DEBUG},  // used by sysmenu (+more?)
 
@@ -125,7 +125,7 @@ void PatchFunctions()
   {
     for (size_t i = 1; i < ArraySize(OSBreakPoints); ++i)
     {
-      Symbol* symbol = g_symbolDB.GetSymbolFromName(OSPatches[i].m_szPatchName);
+      Symbol* symbol = g_symbolDB.GetSymbolFromName(OSBreakPoints[i].m_szPatchName);
       if (symbol)
       {
         PowerPC::breakpoints.Add(symbol->address, false);

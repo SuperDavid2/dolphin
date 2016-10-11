@@ -3,13 +3,17 @@
 // Refer to the license.txt file included.
 
 #include <cinttypes>
+#include <climits>
 #include <memory>
 
 #include "Common/CDUtils.h"
 #include "Common/CommonPaths.h"
 #include "Common/CommonTypes.h"
 #include "Common/FileUtil.h"
+#include "Common/Logging/Log.h"
+#include "Common/MsgHandler.h"
 #include "Common/StringUtil.h"
+#include "Common/SysConf.h"
 
 #include "Core/Boot/Boot.h"
 #include "Core/Boot/Boot_DOL.h"
@@ -17,12 +21,46 @@
 #include "Core/Core.h"  // for bWii
 #include "Core/FifoPlayer/FifoDataFile.h"
 #include "Core/HW/SI.h"
+#include "Core/IPC_HLE/WII_IPC_HLE_Device_usb_bt_base.h"
 #include "Core/PowerPC/PowerPC.h"
 
 #include "DiscIO/Enums.h"
 #include "DiscIO/NANDContentLoader.h"
 #include "DiscIO/Volume.h"
 #include "DiscIO/VolumeCreator.h"
+
+// Change from IPL.LNG value to IPL.SADR country code.
+// http://wiibrew.org/wiki/Country_Codes
+static u8 GetSADRCountryCode(DiscIO::Language language)
+{
+  switch (language)
+  {
+  case DiscIO::Language::LANGUAGE_JAPANESE:
+    return 1;  // Japan
+  case DiscIO::Language::LANGUAGE_ENGLISH:
+    return 49;  // USA
+  case DiscIO::Language::LANGUAGE_GERMAN:
+    return 78;  // Germany
+  case DiscIO::Language::LANGUAGE_FRENCH:
+    return 77;  // France
+  case DiscIO::Language::LANGUAGE_SPANISH:
+    return 105;  // Spain
+  case DiscIO::Language::LANGUAGE_ITALIAN:
+    return 83;  // Italy
+  case DiscIO::Language::LANGUAGE_DUTCH:
+    return 94;  // Netherlands
+  case DiscIO::Language::LANGUAGE_SIMPLIFIED_CHINESE:
+  case DiscIO::Language::LANGUAGE_TRADITIONAL_CHINESE:
+    return 157;  // China
+  case DiscIO::Language::LANGUAGE_KOREAN:
+    return 136;  // Korea
+  case DiscIO::Language::LANGUAGE_UNKNOWN:
+    break;
+  }
+
+  PanicAlert("Invalid language. Defaulting to Japanese.");
+  return 1;
+}
 
 SConfig* SConfig::m_Instance;
 
@@ -31,6 +69,7 @@ SConfig::SConfig()
   LoadDefaults();
   // Make sure we have log manager
   LoadSettings();
+  LoadSettingsFromSysconf();
 }
 
 void SConfig::Init()
@@ -47,7 +86,6 @@ void SConfig::Shutdown()
 SConfig::~SConfig()
 {
   SaveSettings();
-  delete m_SYSCONF;
 }
 
 void SConfig::SaveSettings()
@@ -67,9 +105,10 @@ void SConfig::SaveSettings()
   SaveFifoPlayerSettings(ini);
   SaveAnalyticsSettings(ini);
   SaveNetworkSettings(ini);
+  SaveBluetoothPassthroughSettings(ini);
+  SaveSysconfSettings(ini);
 
   ini.Save(File::GetUserPath(F_DOLPHINCONFIG_IDX));
-  m_SYSCONF->Save();
 }
 
 namespace
@@ -136,8 +175,8 @@ void SConfig::SaveInterfaceSettings(IniFile& ini)
   interface->Set("OnScreenDisplayMessages", bOnScreenDisplayMessages);
   interface->Set("HideCursor", bHideCursor);
   interface->Set("AutoHideCursor", bAutoHideCursor);
-  interface->Set("MainWindowPosX", (iPosX == -32000) ? 0 : iPosX);  // TODO - HAX
-  interface->Set("MainWindowPosY", (iPosY == -32000) ? 0 : iPosY);  // TODO - HAX
+  interface->Set("MainWindowPosX", iPosX);
+  interface->Set("MainWindowPosY", iPosY);
   interface->Set("MainWindowWidth", iWidth);
   interface->Set("MainWindowHeight", iHeight);
   interface->Set("LanguageCode", m_InterfaceLanguage);
@@ -217,7 +256,6 @@ void SConfig::SaveCoreSettings(IniFile& ini)
   core->Set("Fastmem", bFastmem);
   core->Set("CPUThread", bCPUThread);
   core->Set("DSPHLE", bDSPHLE);
-  core->Set("SkipIdle", bSkipIdle);
   core->Set("SyncOnSkipIdle", bSyncGPUOnSkipIdleHack);
   core->Set("SyncGPU", bSyncGPU);
   core->Set("SyncGpuMaxDistance", iSyncGpuMaxDistance);
@@ -322,6 +360,57 @@ void SConfig::SaveAnalyticsSettings(IniFile& ini)
   analytics->Set("PermissionAsked", m_analytics_permission_asked);
 }
 
+void SConfig::SaveBluetoothPassthroughSettings(IniFile& ini)
+{
+  IniFile::Section* section = ini.GetOrCreateSection("BluetoothPassthrough");
+
+  section->Set("Enabled", m_bt_passthrough_enabled);
+  section->Set("VID", m_bt_passthrough_vid);
+  section->Set("PID", m_bt_passthrough_pid);
+  section->Set("LinkKeys", m_bt_passthrough_link_keys);
+}
+
+void SConfig::SaveSysconfSettings(IniFile& ini)
+{
+  IniFile::Section* section = ini.GetOrCreateSection("Sysconf");
+
+  section->Set("SensorBarPosition", m_sensor_bar_position);
+  section->Set("SensorBarSensitivity", m_sensor_bar_sensitivity);
+  section->Set("SpeakerVolume", m_speaker_volume);
+  section->Set("WiimoteMotor", m_wiimote_motor);
+  section->Set("WiiLanguage", m_wii_language);
+  section->Set("AspectRatio", m_wii_aspect_ratio);
+  section->Set("Screensaver", m_wii_screensaver);
+}
+
+void SConfig::SaveSettingsToSysconf()
+{
+  SysConf sysconf;
+
+  sysconf.SetData<u8>("IPL.SSV", m_wii_screensaver);
+  sysconf.SetData<u8>("IPL.LNG", m_wii_language);
+  u8 country_code = GetSADRCountryCode(static_cast<DiscIO::Language>(m_wii_language));
+  sysconf.SetArrayData("IPL.SADR", &country_code, 1);
+
+  sysconf.SetData<u8>("IPL.AR", m_wii_aspect_ratio);
+  sysconf.SetData<u8>("BT.BAR", m_sensor_bar_position);
+  sysconf.SetData<u32>("BT.SENS", m_sensor_bar_sensitivity);
+  sysconf.SetData<u8>("BT.SPKV", m_speaker_volume);
+  sysconf.SetData("BT.MOT", m_wiimote_motor);
+  sysconf.SetData("IPL.PGS", bProgressive);
+  sysconf.SetData("IPL.E60", bPAL60);
+
+  // Disable WiiConnect24's standby mode. If it is enabled, it prevents us from receiving
+  // shutdown commands in the State Transition Manager (STM).
+  // TODO: remove this if and once Dolphin supports WC24 standby mode.
+  sysconf.SetData<u8>("IPL.IDL", 0x00);
+  NOTICE_LOG(COMMON, "Disabling WC24 'standby' (shutdown to idle) to avoid hanging on shutdown");
+
+  RestoreBTInfoSection(&sysconf);
+
+  sysconf.Save();
+}
+
 void SConfig::LoadSettings()
 {
   INFO_LOG(BOOT, "Loading Settings from %s", File::GetUserPath(F_DOLPHINCONFIG_IDX).c_str());
@@ -339,8 +428,8 @@ void SConfig::LoadSettings()
   LoadFifoPlayerSettings(ini);
   LoadNetworkSettings(ini);
   LoadAnalyticsSettings(ini);
-
-  m_SYSCONF = new SysConf();
+  LoadBluetoothPassthroughSettings(ini);
+  LoadSysconfSettings(ini);
 }
 
 void SConfig::LoadGeneralSettings(IniFile& ini)
@@ -389,10 +478,10 @@ void SConfig::LoadInterfaceSettings(IniFile& ini)
   interface->Get("OnScreenDisplayMessages", &bOnScreenDisplayMessages, true);
   interface->Get("HideCursor", &bHideCursor, false);
   interface->Get("AutoHideCursor", &bAutoHideCursor, false);
-  interface->Get("MainWindowPosX", &iPosX, 100);
-  interface->Get("MainWindowPosY", &iPosY, 100);
-  interface->Get("MainWindowWidth", &iWidth, 800);
-  interface->Get("MainWindowHeight", &iHeight, 600);
+  interface->Get("MainWindowPosX", &iPosX, INT_MIN);
+  interface->Get("MainWindowPosY", &iPosY, INT_MIN);
+  interface->Get("MainWindowWidth", &iWidth, -1);
+  interface->Get("MainWindowHeight", &iHeight, -1);
   interface->Get("LanguageCode", &m_InterfaceLanguage, "");
   interface->Get("ShowToolbar", &m_InterfaceToolbar, true);
   interface->Get("ShowStatusbar", &m_InterfaceStatusbar, true);
@@ -479,7 +568,6 @@ void SConfig::LoadCoreSettings(IniFile& ini)
   core->Get("DSPHLE", &bDSPHLE, true);
   core->Get("TimingVariance", &iTimingVariance, 40);
   core->Get("CPUThread", &bCPUThread, true);
-  core->Get("SkipIdle", &bSkipIdle, true);
   core->Get("SyncOnSkipIdle", &bSyncGPUOnSkipIdleHack, true);
   core->Get("DefaultISO", &m_strDefaultISO);
   core->Get("DVDRoot", &m_strDVDRoot);
@@ -604,6 +692,44 @@ void SConfig::LoadAnalyticsSettings(IniFile& ini)
   analytics->Get("PermissionAsked", &m_analytics_permission_asked, false);
 }
 
+void SConfig::LoadBluetoothPassthroughSettings(IniFile& ini)
+{
+  IniFile::Section* section = ini.GetOrCreateSection("BluetoothPassthrough");
+
+  section->Get("Enabled", &m_bt_passthrough_enabled, false);
+  section->Get("VID", &m_bt_passthrough_vid, -1);
+  section->Get("PID", &m_bt_passthrough_pid, -1);
+  section->Get("LinkKeys", &m_bt_passthrough_link_keys, "");
+}
+
+void SConfig::LoadSysconfSettings(IniFile& ini)
+{
+  IniFile::Section* section = ini.GetOrCreateSection("Sysconf");
+
+  section->Get("SensorBarPosition", &m_sensor_bar_position, m_sensor_bar_position);
+  section->Get("SensorBarSensitivity", &m_sensor_bar_sensitivity, m_sensor_bar_sensitivity);
+  section->Get("SpeakerVolume", &m_speaker_volume, m_speaker_volume);
+  section->Get("WiimoteMotor", &m_wiimote_motor, m_wiimote_motor);
+  section->Get("WiiLanguage", &m_wii_language, m_wii_language);
+  section->Get("AspectRatio", &m_wii_aspect_ratio, m_wii_aspect_ratio);
+  section->Get("Screensaver", &m_wii_screensaver, m_wii_screensaver);
+}
+
+void SConfig::LoadSettingsFromSysconf()
+{
+  SysConf sysconf;
+
+  m_wii_screensaver = sysconf.GetData<u8>("IPL.SSV");
+  m_wii_language = sysconf.GetData<u8>("IPL.LNG");
+  m_wii_aspect_ratio = sysconf.GetData<u8>("IPL.AR");
+  m_sensor_bar_position = sysconf.GetData<u8>("BT.BAR");
+  m_sensor_bar_sensitivity = sysconf.GetData<u32>("BT.SENS");
+  m_speaker_volume = sysconf.GetData<u8>("BT.SPKV");
+  m_wiimote_motor = sysconf.GetData<u8>("BT.MOT") != 0;
+  bProgressive = sysconf.GetData<u8>("IPL.PGS") != 0;
+  bPAL60 = sysconf.GetData<u8>("IPL.E60") != 0;
+}
+
 void SConfig::LoadDefaults()
 {
   bEnableDebugging = false;
@@ -620,7 +746,6 @@ void SConfig::LoadDefaults()
   iCPUCore = PowerPC::CORE_JIT64;
   iTimingVariance = 40;
   bCPUThread = false;
-  bSkipIdle = false;
   bSyncGPUOnSkipIdleHack = true;
   bRunCompareServer = false;
   bDSPHLE = true;
@@ -640,10 +765,10 @@ void SConfig::LoadDefaults()
   bDPL2Decoder = false;
   iLatency = 14;
 
-  iPosX = 100;
-  iPosY = 100;
-  iWidth = 800;
-  iHeight = 600;
+  iPosX = INT_MIN;
+  iPosY = INT_MIN;
+  iWidth = -1;
+  iHeight = -1;
 
   m_analytics_id = "";
   m_analytics_enabled = false;
@@ -945,7 +1070,7 @@ DiscIO::Language SConfig::GetCurrentLanguage(bool wii) const
 {
   int language_value;
   if (wii)
-    language_value = SConfig::GetInstance().m_SYSCONF->GetData<u8>("IPL.LNG");
+    language_value = SConfig::GetInstance().m_wii_language;
   else
     language_value = SConfig::GetInstance().SelectedLanguage + 1;
   DiscIO::Language language = static_cast<DiscIO::Language>(language_value);
