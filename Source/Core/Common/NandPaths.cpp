@@ -22,7 +22,6 @@ static std::string s_temp_wii_root;
 
 void InitializeWiiRoot(bool use_dummy)
 {
-  ShutdownWiiRoot();
   if (use_dummy)
   {
     s_temp_wii_root = File::CreateTempDir();
@@ -40,11 +39,11 @@ void InitializeWiiRoot(bool use_dummy)
       s_registered = true;
       atexit(ShutdownWiiRoot);
     }
-    File::SetUserPath(D_SESSION_WIIROOT_IDX, s_temp_wii_root);
+    File::SetUserPath(D_SESSION_WIIROOT_IDX, File::GetUserPath(D_WIIROOT_IDX));
   }
   else
   {
-    File::SetUserPath(D_SESSION_WIIROOT_IDX, File::GetUserPath(D_WIIROOT_IDX));
+    File::SetUserPath(D_SESSION_WIIROOT_IDX, s_temp_wii_root);
   }
 }
 
