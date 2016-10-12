@@ -43,7 +43,7 @@ void InitializeWiiRoot(bool use_dummy)
   }
   else
   {
-    File::SetUserPath(D_SESSION_WIIROOT_IDX, s_temp_wii_root);
+    File::SetUserPath(D_SESSION_WIIROOT_IDX, File::GetUserPath(D_WIIROOT_IDX));
   }
 }
 
